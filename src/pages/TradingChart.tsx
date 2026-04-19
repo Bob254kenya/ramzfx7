@@ -1221,7 +1221,8 @@ export default function ProScannerBot() {
       
       const sym = data.tick.symbol as string;
       const quote = data.tick.quote;
-      const digit = getLastDigit(quote);
+      // Use quoteRaw to preserve trailing zeros (e.g. 1234.50 → digit 0, not 5)
+      const digit = getLastDigit(quote, data.tick.quoteRaw);
       
       if (typeof digit !== 'number' || isNaN(digit) || digit < 0 || digit > 9) {
         return;

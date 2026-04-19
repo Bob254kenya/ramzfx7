@@ -537,12 +537,17 @@ function calculateChartDigitStats(symbol: string, tickRange: number) {
   for (let i = 0; i <= 9; i++) frequency[i] = 0;
   
   for (const digit of recentTicks) {
-    frequency[digit] = (frequency[digit] || 0) + 1;
+    // Explicit pre-initialized increment — no || 0 risk for digit 0
+    frequency[digit]++;
   }
   
+  const total = recentTicks.length;
   const percentages: Record<number, number> = {};
   for (let i = 0; i <= 9; i++) {
-    percentages[i] = recentTicks.length > 0 ? (frequency[i] / recentTicks.length) * 100 : 0;
+    // Guard against division by zero; enforce 1 decimal place
+    percentages[i] = total > 0
+      ? parseFloat(((frequency[i] / total) * 100).toFixed(1))
+      : 0;
   }
   
   let mostCommon = 0;
@@ -584,12 +589,12 @@ function calculateChartDigitStats(symbol: string, tickRange: number) {
     secondMost,
     leastCommon,
     totalTicks: recentTicks.length,
-    evenPercentage: recentTicks.length > 0 ? (evenCount / recentTicks.length * 100) : 50,
-    oddPercentage: recentTicks.length > 0 ? (oddCount / recentTicks.length * 100) : 50,
-    overPercentage: recentTicks.length > 0 ? (overCount / recentTicks.length * 100) : 50,
-    underPercentage: recentTicks.length > 0 ? (underCount / recentTicks.length * 100) : 50,
-    over3Percentage: recentTicks.length > 0 ? (over3Count / recentTicks.length * 100) : 50,
-    under6Percentage: recentTicks.length > 0 ? (under6Count / recentTicks.length * 100) : 50,
+    evenPercentage: recentTicks.length > 0 ? parseFloat(((evenCount / recentTicks.length) * 100).toFixed(1)) : 50,
+    oddPercentage: recentTicks.length > 0 ? parseFloat(((oddCount / recentTicks.length) * 100).toFixed(1)) : 50,
+    overPercentage: recentTicks.length > 0 ? parseFloat(((overCount / recentTicks.length) * 100).toFixed(1)) : 50,
+    underPercentage: recentTicks.length > 0 ? parseFloat(((underCount / recentTicks.length) * 100).toFixed(1)) : 50,
+    over3Percentage: recentTicks.length > 0 ? parseFloat(((over3Count / recentTicks.length) * 100).toFixed(1)) : 50,
+    under6Percentage: recentTicks.length > 0 ? parseFloat(((under6Count / recentTicks.length) * 100).toFixed(1)) : 50,
     last26Digits,
     tickPrices: last26Prices,
   };
@@ -762,7 +767,8 @@ const TradingChartPopup = ({ onClose, isRunning }: { onClose: () => void; isRunn
           subscriptionHandlerRef.current = (data: any) => {
             if (!active || !data.tick) return;
             const quote = data.tick.quote;
-            const digit = getLastDigit(quote);
+            // Use quoteRaw to preserve trailing zeros (e.g. 1234.50 → digit 0)
+            const digit = getLastDigit(quote, data.tick.quoteRaw);
             addChartTick(symbol, digit, quote);
           };
           
@@ -1319,7 +1325,7 @@ function simulateVirtualContract(
       if (data.tick && data.tick.symbol === symbol) {
         clearTimeout(timeout);
         unsub();
-        const digit = getLastDigit(data.tick.quote);
+        const digit = getLastDigit(data.tick.quote, data.tick.quoteRaw);
         const b = parseInt(barrier) || 0;
         let won = false;
         switch (contractType) {
@@ -1677,7 +1683,8 @@ export default function ProScannerBot() {
     const handler = (data: any) => {
       if (!data.tick || !active) return;
       const sym = data.tick.symbol as string;
-      const digit = getLastDigit(data.tick.quote);
+      // Use quoteRaw to preserve trailing zeros (e.g. 1234.50 → digit 0, not 5)
+      const digit = getLastDigit(data.tick.quote, data.tick.quoteRaw);
       const now = performance.now();
 
       const map = tickMapRef.current;

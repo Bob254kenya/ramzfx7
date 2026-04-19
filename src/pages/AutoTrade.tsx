@@ -593,16 +593,22 @@ function calculateDigitStats(symbol: string, tickRange: number): DigitStats {
   const tickPricesData = getTickPrices(symbol);
   const recentTicks = ticks.slice(-tickRange);
   
+  // Pre-initialize all 10 digit slots to 0 — digit 0 is always slot 0
   const frequency: Record<number, number> = {};
   for (let i = 0; i <= 9; i++) frequency[i] = 0;
   
   for (const digit of recentTicks) {
-    frequency[digit] = (frequency[digit] || 0) + 1;
+    // Explicit pre-initialized increment — no || 0 risk for digit 0
+    frequency[digit]++;
   }
   
+  const total = recentTicks.length;
   const percentages: Record<number, number> = {};
   for (let i = 0; i <= 9; i++) {
-    percentages[i] = (frequency[i] / recentTicks.length) * 100;
+    // Guard against division by zero; enforce 1 decimal place
+    percentages[i] = total > 0
+      ? parseFloat(((frequency[i] / total) * 100).toFixed(1))
+      : 0;
   }
   
   let mostCommon = 0;
@@ -660,7 +666,8 @@ function simulateVirtualContract(
       if (data.tick && data.tick.symbol === symbol) {
         clearTimeout(timeout);
         unsub();
-        const digit = getLastDigit(data.tick.quote);
+        // Use quoteRaw to preserve trailing zeros (e.g. 1234.50 \u2192 digit 0, not 5)
+        const digit = getLastDigit(data.tick.quote, data.tick.quoteRaw);
         const b = parseInt(barrier) || 0;
         let won = false;
         switch (contractType) {
@@ -940,7 +947,9 @@ export default function TradingChart() {
             if (!active || !data.tick) return;
             
             const quote = data.tick.quote;
-            const digit = getLastDigit(quote);
+            // Use quoteRaw (injected by DerivAPI) to preserve trailing zeros
+            // e.g. API sends 1234.50 → JSON.parse gives 1234.5 → quoteRaw="1234.50" → digit 0
+            const digit = getLastDigit(quote, data.tick.quoteRaw);
             const epoch = data.tick.epoch;
             
             addTick(symbol, digit, quote);
@@ -2999,7 +3008,9 @@ export default function TradingChart() {
                               : '(virtual)'}
                           </span>
                         )}
-                        {t.resultDigit !== undefined && (
+                        {/* CRITICAL: digit 0 is falsy in JS — use !== undefined && !== null,
+                             NOT just `&& t.resultDigit` which would hide digit 0 */}
+                        {t.resultDigit !== undefined && t.resultDigit !== null && (
                           <Badge variant="outline" className={`text-[8px] px-1 ${t.status === 'won' ? 'border-profit text-profit' : 'border-loss text-loss'}`}>
                             {t.resultDigit}
                           </Badge>

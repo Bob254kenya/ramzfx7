@@ -37,8 +37,10 @@ export function useMarketTicks(symbol: MarketSymbol, maxTicks: number = 100) {
       setState({
         prices,
         digits,
-        lastPrice: prices[prices.length - 1] || 0,
-        lastDigit: digits[digits.length - 1] || 0,
+        lastPrice: prices[prices.length - 1] ?? 0,
+        // CRITICAL: use ?? not || — digit 0 is falsy in JS, || 0 would replace it with 0
+        // (same value here, but semantically wrong and fragile if fallback changes)
+        lastDigit: digits[digits.length - 1] ?? 0,
         lastEpoch: Date.now() / 1000,
         isSubscribed: true,
       });

@@ -70,12 +70,17 @@ const DEFAULT_BOT_CONFIGS: Record<BotId, { name: string; desc: string; icon: str
   },
 };
 
-function waitForNextTick(symbol: string): Promise<{ quote: number; epoch: number }> {
+function waitForNextTick(symbol: string): Promise<{ quote: number; epoch: number; quoteRaw?: string }> {
   return new Promise((resolve) => {
     const unsub = derivApi.onMessage((data: any) => {
       if (data.tick && data.tick.symbol === symbol) {
         unsub();
-        resolve({ quote: data.tick.quote, epoch: data.tick.epoch });
+        resolve({
+          quote: data.tick.quote,
+          epoch: data.tick.epoch,
+          // quoteRaw is injected by DerivAPI's onmessage handler (trailing-zero fix)
+          quoteRaw: data.tick.quoteRaw,
+        });
       }
     });
   });
@@ -120,7 +125,8 @@ export default function BotsPage() {
     let active = true;
     const handler = (data: any) => {
       if (data.tick && data.tick.symbol === market && active) {
-        const d = getLastDigit(data.tick.quote);
+        // Use quoteRaw to preserve trailing zeros (e.g. 1234.50 → digit 0, not 5)
+        const d = getLastDigit(data.tick.quote, data.tick.quoteRaw);
         setDigits(prev => [...prev, d].slice(-500));
         setPrices(prev => [...prev, data.tick.quote].slice(-500));
       }
@@ -166,7 +172,8 @@ export default function BotsPage() {
 
       try {
         const tick = await waitForNextTick(market);
-        const digit = getLastDigit(tick.quote);
+        // Use quoteRaw to preserve trailing zeros in digit extraction
+        const digit = getLastDigit(tick.quote, tick.quoteRaw);
         const currentDigits = [...digits, digit].slice(-500);
         const currentPrices = [...prices, tick.quote].slice(-500);
 

@@ -54,17 +54,26 @@ export interface ContractResult {
 export type MessageHandler = (data: any) => void;
 
 // Unified safe last digit extraction function
-export function safeLastDigit(price: number): number {
+// Accepts optional rawStr to preserve trailing zeros (e.g. "1234.50" → 0).
+export function safeLastDigit(price: number, rawStr?: string): number {
+  // Prefer string-based extraction to preserve trailing zeros
+  if (rawStr !== undefined && rawStr !== null && rawStr !== '') {
+    const lastChar = rawStr.trim().charAt(rawStr.trim().length - 1);
+    const d = parseInt(lastChar, 10);
+    return Number.isNaN(d) ? 0 : d;
+  }
   if (isNaN(price) || !isFinite(price)) return 0;
   const absolutePrice = Math.abs(price);
   const priceStr = absolutePrice.toString();
   const decimalIndex = priceStr.indexOf('.');
-  
-  if (decimalIndex === -1) return 0;
-  
+  if (decimalIndex === -1) {
+    // Integer: last digit of integer part
+    const lastChar = priceStr.charAt(priceStr.length - 1);
+    const d = parseInt(lastChar, 10);
+    return Number.isNaN(d) ? 0 : d;
+  }
   const decimalPart = priceStr.substring(decimalIndex + 1);
   if (decimalPart.length < 1) return 0;
-  
   const lastDigit = parseInt(decimalPart.charAt(decimalPart.length - 1), 10);
   return isNaN(lastDigit) ? 0 : lastDigit;
 }
@@ -93,7 +102,18 @@ class DerivAPI {
       };
 
       this.ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        const rawData: string = event.data;
+        const data = JSON.parse(rawData);
+
+        // TRAILING ZERO FIX: inject raw quote string before Number conversion
+        // JSON.parse converts 1234.50 -> 1234.5 (drops trailing zero).
+        // We extract the raw string so digit extractors can read the correct last digit.
+        if (data.tick && data.tick.quote !== undefined) {
+          const quoteMatch = rawData.match(/"quote"\s*:\s*(\d+\.?\d*)/);
+          if (quoteMatch) {
+            data.tick.quoteRaw = quoteMatch[1];
+          }
+        }
         
         if (data.req_id && this.handlers.has(data.req_id)) {
           this.handlers.get(data.req_id)!(data);
@@ -535,7 +555,8 @@ export class LastDigitScanner {
     // Subscribe to live ticks
     this.tickHandler = (data: any) => {
       if (data.tick && data.tick.symbol === this.symbol) {
-        this.processTick(data.tick.quote);
+        // Pass raw quote string to preserve trailing zeros in last digit extraction
+        this.processTick(data.tick.quote, data.tick.quoteRaw);
       }
     };
     
@@ -567,11 +588,12 @@ export class LastDigitScanner {
     this.unsubscribeFn = null;
   }
 
-  private processTick(price: number): void {
+  private processTick(price: number, quoteRaw?: string): void {
     if (!this.isActive) return;
     
     this.lastPrice = price;
-    const lastDigit = safeLastDigit(price);
+    // Use raw string when available to preserve trailing zeros (e.g. 1234.50 → digit 0)
+    const lastDigit = quoteRaw ? safeLastDigit(price, quoteRaw) : safeLastDigit(price);
     
     // Add to last digits array
     this.lastDigits.push(lastDigit);

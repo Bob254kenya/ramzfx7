@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TrendingUp, TrendingDown, Activity, Zap, BarChart3, ArrowUpDown } from 'lucide-react';
-import { getLastDigit } from '@/services/analysis';
+import { getLastDigit, safeLastDigitFromString } from '@/services/analysis';
 
 interface VolatilityCardProps {
   symbol: string;
@@ -18,9 +18,12 @@ interface Pattern {
 }
 
 /**
- * Extracts last digit from a price using full precision
+ * Extracts last digit from a price string (preserves trailing zeros).
+ * Falls back to number-based extraction if no string is available.
+ * e.g. "1234.50" -> 0 (not 5)
  */
-function extractDigit(price: number): number {
+function extractDigit(price: number, rawStr?: string): number {
+  if (rawStr) return safeLastDigitFromString(rawStr);
   return getLastDigit(price);
 }
 
@@ -72,18 +75,35 @@ export default function VolatilityCard({
       if (!mountedRef.current) return;
       
       try {
-        const data = JSON.parse(msg.data);
+        // Keep the raw string BEFORE JSON.parse to preserve trailing zeros.
+        // e.g. JSON sends "quote":1234.50 but JSON.parse gives 1234.5 (drops the 0).
+        const rawData: string = msg.data;
+        const data = JSON.parse(rawData);
 
         if (data.history) {
-          const prices: number[] = data.history.prices || [];
-          const extracted = prices.map(extractDigit);
-          digitsRef.current = extracted;
-          setDigits([...extracted]);
+          // Extract all raw price strings from the JSON to preserve trailing zeros.
+          const rawPricesMatch = rawData.match(/"prices"\s*:\s*\[([^\]]+)\]/);
+          if (rawPricesMatch) {
+            const rawPrices = rawPricesMatch[1].split(',').map(s => s.trim());
+            const extracted = rawPrices.map(s => safeLastDigitFromString(s));
+            digitsRef.current = extracted;
+            setDigits([...extracted]);
+          } else {
+            // Fallback: number-based (trailing zeros already lost)
+            const prices: number[] = data.history.prices || [];
+            const extracted = prices.map(p => extractDigit(p));
+            digitsRef.current = extracted;
+            setDigits([...extracted]);
+          }
         }
 
         if (data.tick) {
           const price = data.tick.quote;
-          const digit = extractDigit(price);
+          // Extract raw quote string to preserve trailing zeros.
+          const quoteMatch = rawData.match(/"quote"\s*:\s*(\d+\.?\d*)/);
+          const quoteRaw = quoteMatch ? quoteMatch[1] : undefined;
+          const digit = extractDigit(price, quoteRaw);
+          // digit is always 0-9 from extractDigit — explicit numeric bounds check
           if (digit >= 0 && digit <= 9) {
             digitsRef.current.push(digit);
             if (digitsRef.current.length > 4000) digitsRef.current.shift();
@@ -428,7 +448,8 @@ export default function VolatilityCard({
       <div className="mb-2 sm:mb-2.5">
         <div className="grid grid-cols-5 gap-0.5 sm:gap-1">
           {Array.from({ length: 10 }, (_, i) => {
-            const pct = analysis.total > 0 ? ((analysis.counts[i] / analysis.total) * 100).toFixed(0) : '0';
+            // toFixed(1) ensures digit 0 shows as "0.0%" not "0%" (1-decimal-place rule)
+            const pct = analysis.total > 0 ? ((analysis.counts[i] / analysis.total) * 100).toFixed(1) : '0.0';
             let btnClass = 'bg-muted/50 hover:bg-muted text-foreground';
             if (i === analysis.most) btnClass = 'bg-gradient-to-r from-green-500 to-emerald-500 text-white';
             else if (i === analysis.second) btnClass = 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white';
@@ -520,7 +541,7 @@ export default function VolatilityCard({
             {analysis.bestEntryDigits.map((entry, idx) => (
               <div key={idx} className="text-center">
                 <div className="text-[10px] sm:text-[11px] font-mono font-bold text-foreground">{entry.digit}</div>
-                <div className="text-[5px] sm:text-[6px] text-green-500">{entry.winRate.toFixed(0)}%</div>
+                <div className="text-[5px] sm:text-[6px] text-green-500">{entry.winRate.toFixed(1)}%</div>
               </div>
             ))}
           </div>

@@ -2,14 +2,43 @@
  * Technical analysis utility functions.
  * DEFENSIVE PROGRAMMING: digit 0 is NEVER ignored.
  * All checks use explicit numeric comparisons — no truthy/falsy evaluation.
+ *
+ * TRAILING ZERO FIX:
+ * JavaScript's Number.toString() drops trailing zeros, e.g. 1234.50 → "1234.5".
+ * Use safeLastDigitFromString(rawStr) when you have the raw price string from
+ * the WebSocket JSON before JSON.parse discards the trailing zero.
  */
+
+/**
+ * Extract last digit from a RAW PRICE STRING (before JSON.parse).
+ * Preserves trailing zeros: "1234.50" → 0, "9876.43" → 3.
+ * Use this whenever you can intercept the raw JSON string from the WebSocket.
+ * Returns integer 0-9, never null/undefined.
+ */
+export function safeLastDigitFromString(priceStr: string): number {
+  if (!priceStr || typeof priceStr !== 'string') return 0;
+  const str = priceStr.trim();
+  if (str.length === 0) return 0;
+  const lastChar = str.charAt(str.length - 1);
+  const digit = parseInt(lastChar, 10);
+  return Number.isNaN(digit) ? 0 : digit;
+}
 
 /**
  * Unified safe last digit extraction function.
  * Guarantees correct handling of digit 0, scientific notation, floating point errors.
  * Returns integer 0-9, never null/undefined.
+ *
+ * NOTE: Accepts an optional rawStr parameter — the raw price string from the
+ * WebSocket JSON. When provided, trailing zeros are preserved correctly.
+ * Example: price=1234.5, rawStr="1234.50" → returns 0 (not 5).
  */
-export function safeLastDigit(price: number): number {
+export function safeLastDigit(price: number, rawStr?: string): number {
+  // If raw string is provided, use string-based extraction (preserves trailing zeros)
+  if (rawStr !== undefined && rawStr !== null && rawStr !== '') {
+    return safeLastDigitFromString(rawStr);
+  }
+
   // Handle invalid inputs explicitly
   if (price === null || price === undefined || Number.isNaN(price)) {
     return 0;
@@ -60,13 +89,14 @@ export function safeLastDigit(price: number): number {
  * No locale usage. Handles scientific notation, NaN, null, and negative values.
  * Returns an integer 0-9.
  */
-export function getLastDigit(price: number): number {
-  const digit = safeLastDigit(price);
-  
-  // MANDATORY DEBUG LOG
-  console.log("RAW_TICK:", price);
-  console.log("DIGIT:", digit);
-  
+/**
+ * Extract last digit from a tick price.
+ * Accepts optional rawStr (raw price string from WebSocket JSON) to preserve
+ * trailing zeros — e.g. "1234.50" → 0 instead of 5.
+ * Returns an integer 0-9.
+ */
+export function getLastDigit(price: number, rawStr?: string): number {
+  const digit = safeLastDigit(price, rawStr);
   return digit;
 }
 
@@ -92,11 +122,11 @@ export function analyzeDigits(prices: number[]): {
     frequency[digit] = frequency[digit] + 1;
   }
 
-  // Calculate percentages: (count / totalTicks) * 100
+  // Calculate percentages to 1 decimal place: (count / totalTicks) * 100
   // If totalTicks is 0, return zeros to avoid division by zero
-  const percentages = totalTicks === 0 
+  const percentages = totalTicks === 0
     ? new Array(10).fill(0)
-    : frequency.map(count => (count / totalTicks) * 100);
+    : frequency.map(count => parseFloat(((count / totalTicks) * 100).toFixed(1)));
 
   // Find most common digit (handles ties by returning first occurrence)
   let maxFreq = -1;
