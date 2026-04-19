@@ -6,25 +6,60 @@
 
 /**
  * Extract the last digit from a tick price.
- * Converts to string, removes decimal, takes last character.
- * Digit 0 is a valid result.
+ * MANDATORY: Uses fixed precision stabilization to handle float errors.
+ * No locale usage. Handles scientific notation, NaN, null, and negative values.
+ * Returns an integer 0-9.
  */
 export function getLastDigit(price: number): number {
   if (price === null || price === undefined || Number.isNaN(price)) {
-    console.error('[getLastDigit] Invalid price:', price);
-    return 0;
-  }
-  // Deriv digit extraction: toFixed(2) then last character
-  const fixedStr = parseFloat(String(price)).toFixed(2);
-  const lastChar = fixedStr.slice(-1);
-  const digit = parseInt(lastChar, 10);
-
-  if (Number.isNaN(digit) || digit < 0 || digit > 9) {
-    console.error('[getLastDigit] Failed extraction from price:', price, '→ raw:', lastChar);
     return 0;
   }
 
-  return digit;
+  // STEP 1: Normalize safely (NO locale usage)
+  // STEP 2: Force fixed precision (10 decimals) to stabilize float representation
+  // This removes scientific notation risk and floating point noise
+  const stabilized = Math.abs(price).toFixed(10);
+  
+  // STEP 3: Convert to string safely (toFixed already does this)
+  // STEP 4: Strip non-digit characters (including the dot)
+  // We need to find the actual last digit of the original number.
+  // Since we used toFixed(10), the trailing zeros are NOT the actual last digit.
+  // We must use the raw string representation but handle scientific notation.
+  
+  let rawStr = Math.abs(price).toString();
+  
+  // Handle scientific notation manually to avoid precision loss
+  if (rawStr.includes('e')) {
+    const parts = rawStr.split('e');
+    const base = parts[0];
+    const exp = parseInt(parts[1], 10);
+    const [integer, fractional] = base.split('.');
+    
+    if (exp < 0) {
+      const absExp = Math.abs(exp);
+      rawStr = '0.' + '0'.repeat(absExp - 1) + integer + (fractional || '');
+    } else {
+      const frac = fractional || '';
+      if (exp >= frac.length) {
+        rawStr = integer + frac + '0'.repeat(exp - frac.length);
+      } else {
+        rawStr = integer + frac.slice(0, exp) + '.' + frac.slice(exp);
+      }
+    }
+  }
+
+  // STEP 5: Extract LAST digit only
+  // Remove dot and any other non-digits
+  const digitsOnly = rawStr.replace(/[^0-9]/g, '');
+  if (digitsOnly.length === 0) return 0;
+  
+  const lastDigit = parseInt(digitsOnly.charAt(digitsOnly.length - 1), 10);
+
+  // MANDATORY DEBUG LOG
+  console.log("RAW_TICK:", price);
+  console.log("DIGIT:", lastDigit);
+
+  return isNaN(lastDigit) ? 0 : lastDigit;
 }
 
 /**

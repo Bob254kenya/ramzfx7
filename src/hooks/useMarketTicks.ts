@@ -22,6 +22,8 @@ export function useMarketTicks(symbol: MarketSymbol, maxTicks: number = 100) {
   });
   const subscribedRef = useRef(false);
 
+  const handlerRef = useRef<((data: any) => void) | null>(null);
+
   const subscribe = useCallback(async () => {
     if (subscribedRef.current || !derivApi.isConnected) return;
     subscribedRef.current = true;
@@ -42,7 +44,7 @@ export function useMarketTicks(symbol: MarketSymbol, maxTicks: number = 100) {
       });
 
       // Subscribe to live ticks
-      await derivApi.subscribeTicks(symbol, (data) => {
+      handlerRef.current = (data) => {
         if (data.tick) {
           const price = data.tick.quote;
           // FIX: getLastDigit returns 0-9; no truthy guard needed
@@ -61,7 +63,9 @@ export function useMarketTicks(symbol: MarketSymbol, maxTicks: number = 100) {
             };
           });
         }
-      });
+      };
+
+      await derivApi.subscribeTicks(symbol, handlerRef.current);
     } catch (err) {
       console.error(`Failed to subscribe to ${symbol}:`, err);
       subscribedRef.current = false;
@@ -71,7 +75,10 @@ export function useMarketTicks(symbol: MarketSymbol, maxTicks: number = 100) {
   const unsubscribe = useCallback(async () => {
     if (!subscribedRef.current) return;
     subscribedRef.current = false;
-    await derivApi.unsubscribeTicks(symbol);
+    if (handlerRef.current) {
+      await derivApi.unsubscribeTicks(symbol, handlerRef.current);
+      handlerRef.current = null;
+    }
     setState(prev => ({ ...prev, isSubscribed: false }));
   }, [symbol]);
 

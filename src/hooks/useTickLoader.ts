@@ -83,16 +83,17 @@ export function useTickLoader(symbol: MarketSymbol, maxTicks: number = 1000) {
       });
     };
 
-    const unsub = derivApi.onMessage(handler);
     if (!subscribedRef.current) {
       subscribedRef.current = true;
-      derivApi.subscribeTicks(symbol, () => {}).catch(console.error);
+      derivApi.subscribeTicks(symbol, handler).catch(console.error);
     }
 
     return () => {
       mountedRef.current = false;
-      unsub();
-      subscribedRef.current = false;
+      if (subscribedRef.current) {
+        derivApi.unsubscribeTicks(symbol, handler);
+        subscribedRef.current = false;
+      }
     };
   }, [symbol, maxTicks, loadHistory]);
 

@@ -285,6 +285,7 @@ const ALL_MARKETS = [
   { symbol: '1HZ30V', name: 'Volatility 30 (1s)', group: 'vol1s' },
   { symbol: '1HZ50V', name: 'Volatility 50 (1s)', group: 'vol1s' },
   { symbol: '1HZ75V', name: 'Volatility 75 (1s)', group: 'vol1s' },
+  { symbol: '1HZ90V', name: 'Volatility 90 (1s)', group: 'vol1s' },
   { symbol: '1HZ100V', name: 'Volatility 100 (1s)', group: 'vol1s' },
   { symbol: 'R_10', name: 'Volatility 10', group: 'vol' },
   { symbol: 'R_25', name: 'Volatility 25', group: 'vol' },
@@ -880,20 +881,22 @@ export default function TradingChart() {
     ));
   }, []);
 
+  const subscriptionHandlerRef = useRef<((data: any) => void) | null>(null);
+
   // Load history
   useEffect(() => {
     let active = true;
     let timeoutId: NodeJS.Timeout;
     
     const cleanup = async () => {
-      if (subscriptionRef.current) {
+      if (subscriptionHandlerRef.current) {
         try {
-          await derivApi.unsubscribeTicks(symbol as MarketSymbol);
+          await derivApi.unsubscribeTicks(symbol as MarketSymbol, subscriptionHandlerRef.current);
           console.log(`Unsubscribed from ${symbol}`);
         } catch (err) {
           console.error('Error unsubscribing:', err);
         }
-        subscriptionRef.current = null;
+        subscriptionHandlerRef.current = null;
       }
     };
 
@@ -932,8 +935,8 @@ export default function TradingChart() {
         
         updateDigitStats();
 
-        if (!subscribedRef.current || !subscriptionRef.current) {
-          subscriptionRef.current = await derivApi.subscribeTicks(symbol as MarketSymbol, (data: any) => {
+        if (!subscriptionHandlerRef.current) {
+          subscriptionHandlerRef.current = (data: any) => {
             if (!active || !data.tick) return;
             
             const quote = data.tick.quote;
@@ -961,7 +964,9 @@ export default function TradingChart() {
                 }
               }, 100);
             }
-          });
+          };
+          
+          await derivApi.subscribeTicks(symbol as MarketSymbol, subscriptionHandlerRef.current);
           subscribedRef.current = true;
           console.log(`Subscribed to ${symbol} for real-time updates`);
           toast.success(`Connected to ${symbol} market`, { duration: 2000 });

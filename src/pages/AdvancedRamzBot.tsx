@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
 import { derivApi, MARKETS, MARKET_GROUPS } from '@/services/deriv-api';
+import { getLastDigit } from '@/services/analysis';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -43,12 +44,27 @@ interface TradeEntry {
 const SCANNER_MARKETS = MARKETS.map(m => m.symbol);
 
 function extractLastDigit(price: number): number {
-  return parseInt(parseFloat(String(price)).toFixed(2).slice(-1), 10);
+  return getLastDigit(price);
 }
 
 function extractExtendedDigit(price: number): number {
-  const priceStr = parseFloat(String(price)).toFixed(2);
-  return parseInt(priceStr.replace('.', '').slice(-2), 10);
+  if (price === null || price === undefined || Number.isNaN(price)) {
+    return 0;
+  }
+
+  // Normalize scientific notation safely 
+  const normalized = Number(price).toLocaleString('fullwide', { 
+    useGrouping: false 
+  }); 
+
+  const digit = Number( 
+    String(normalized) 
+      .replace('.', '') 
+      .replace('-', '') 
+      .slice(-2) 
+  );
+
+  return Number.isNaN(digit) ? 0 : digit;
 }
 
 function waitForNextTick(symbol: string): Promise<{ quote: number; epoch: number }> {
@@ -130,9 +146,9 @@ export default function AdvancedRamzBot() {
     tickHistoryRef.current = [];
     setLiveDigits([]);
 
-    derivApi.subscribeTicks(symbol, (data: any) => {
+    const handler = (data: any) => {
       if (data.tick) {
-        const price = parseFloat(data.tick.quote);
+        const price = data.tick.quote;
         const digit = extractLastDigit(price);
         const extendedDigit = extractExtendedDigit(price);
         const entry: TickEntry = { digit, extendedDigit, isEven: digit % 2 === 0, price, time: Date.now() };
@@ -140,9 +156,11 @@ export default function AdvancedRamzBot() {
         if (tickHistoryRef.current.length > 1000) tickHistoryRef.current.shift();
         setLiveDigits([...tickHistoryRef.current]);
       }
-    });
+    };
 
-    return () => { derivApi.unsubscribeTicks(symbol); };
+    derivApi.subscribeTicks(symbol, handler);
+
+    return () => { derivApi.unsubscribeTicks(symbol, handler); };
   }, [symbol, isAuthorized]);
 
   // Subscribe to ALL markets for scanner
@@ -153,7 +171,7 @@ export default function AdvancedRamzBot() {
     const handler = (data: any) => {
       if (!data.tick || !active) return;
       const sym = data.tick.symbol as string;
-      const price = parseFloat(data.tick.quote);
+      const price = data.tick.quote;
       const digit = extractLastDigit(price);
       const extendedDigit = extractExtendedDigit(price);
       const entry: TickEntry = { digit, extendedDigit, isEven: digit % 2 === 0, price, time: Date.now() };
@@ -163,15 +181,22 @@ export default function AdvancedRamzBot() {
       if (scannerTickRef.current[sym].length > 200) scannerTickRef.current[sym].shift();
     };
 
-    const unsub = derivApi.onMessage(handler);
-    MARKETS.forEach(m => { derivApi.subscribeTicks(m.symbol, () => {}).catch(() => {}); });
+    MARKETS.forEach(m => { 
+      derivApi.subscribeTicks(m.symbol, handler).catch(() => {}); 
+    });
 
     // Update UI periodically
     const interval = setInterval(() => {
       if (active) setScannerTickHistory({ ...scannerTickRef.current });
     }, 2000);
 
-    return () => { active = false; unsub(); clearInterval(interval); };
+    return () => { 
+      active = false; 
+      MARKETS.forEach(m => { 
+        derivApi.unsubscribeTicks(m.symbol, handler).catch(() => {}); 
+      });
+      clearInterval(interval); 
+    };
   }, [isAuthorized, scannerActive]);
 
   useEffect(() => {

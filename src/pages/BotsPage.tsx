@@ -125,9 +125,11 @@ export default function BotsPage() {
         setPrices(prev => [...prev, data.tick.quote].slice(-500));
       }
     };
-    const unsub = derivApi.onMessage(handler);
-    derivApi.subscribeTicks(market, () => {}).catch(console.error);
-    return () => { active = false; unsub(); };
+    derivApi.subscribeTicks(market, handler).catch(console.error);
+    return () => { 
+      active = false; 
+      derivApi.unsubscribeTicks(market, handler);
+    };
   }, [market]);
 
   useEffect(() => { setDigits([]); setPrices([]); }, [market]);

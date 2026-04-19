@@ -462,6 +462,7 @@ const ALL_MARKETS = [
   { symbol: '1HZ30V', name: 'Volatility 30 (1s)', group: 'vol1s' },
   { symbol: '1HZ50V', name: 'Volatility 50 (1s)', group: 'vol1s' },
   { symbol: '1HZ75V', name: 'Volatility 75 (1s)', group: 'vol1s' },
+  { symbol: '1HZ90V', name: 'Volatility 90 (1s)', group: 'vol1s' },
   { symbol: '1HZ100V', name: 'Volatility 100 (1s)', group: 'vol1s' },
   { symbol: 'R_10', name: 'Volatility 10', group: 'vol' },
   { symbol: 'R_25', name: 'Volatility 25', group: 'vol' },
@@ -612,8 +613,7 @@ const TradingChartPopup = ({ onClose, isRunning }: { onClose: () => void; isRunn
   const dragHandleRef = useRef<HTMLDivElement>(null);
   
   const lastSpokenSignal = useRef('');
-  const subscribedRef = useRef(false);
-  const subscriptionRef = useRef<any>(null);
+  const subscriptionHandlerRef = useRef<((data: any) => void) | null>(null);
   
   // Drag handlers
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -731,13 +731,13 @@ const TradingChartPopup = ({ onClose, isRunning }: { onClose: () => void; isRunn
     let active = true;
     
     const cleanup = async () => {
-      if (subscriptionRef.current) {
+      if (subscriptionHandlerRef.current) {
         try {
-          await derivApi.unsubscribeTicks(symbol as MarketSymbol);
+          await derivApi.unsubscribeTicks(symbol as MarketSymbol, subscriptionHandlerRef.current);
         } catch (err) {
           console.error('Error unsubscribing:', err);
         }
-        subscriptionRef.current = null;
+        subscriptionHandlerRef.current = null;
       }
     };
     
@@ -758,13 +758,15 @@ const TradingChartPopup = ({ onClose, isRunning }: { onClose: () => void; isRunn
         
         updateDigitStats();
         
-        if (!subscribedRef.current || !subscriptionRef.current) {
-          subscriptionRef.current = await derivApi.subscribeTicks(symbol as MarketSymbol, (data: any) => {
+        if (!subscriptionHandlerRef.current) {
+          subscriptionHandlerRef.current = (data: any) => {
             if (!active || !data.tick) return;
             const quote = data.tick.quote;
             const digit = getLastDigit(quote);
             addChartTick(symbol, digit, quote);
-          });
+          };
+          
+          await derivApi.subscribeTicks(symbol as MarketSymbol, subscriptionHandlerRef.current);
           subscribedRef.current = true;
         }
       } catch (err) {

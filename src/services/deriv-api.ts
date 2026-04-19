@@ -58,6 +58,7 @@ class DerivAPI {
   private reqId = 0;
   private handlers: Map<number, (data: any) => void> = new Map();
   private subscriptionHandlers: Map<string, MessageHandler[]> = new Map();
+  private subscriptionIds: Map<string, string> = new Map();
   private globalHandlers: MessageHandler[] = [];
   private connected = false;
   private connectPromise: Promise<void> | null = null;
@@ -95,6 +96,7 @@ class DerivAPI {
       this.ws.onclose = () => {
         this.connected = false;
         this.connectPromise = null;
+        this.subscriptionIds.clear();
       };
 
       this.ws.onerror = (err) => {
@@ -152,20 +154,55 @@ class DerivAPI {
   }
 
   async subscribeTicks(symbol: string, handler: MessageHandler) {
+    if (!this.connected) await this.connect();
+    
     const existing = this.subscriptionHandlers.get(symbol) || [];
+    if (existing.includes(handler)) return; // Already subscribed with this handler
+    
     existing.push(handler);
     this.subscriptionHandlers.set(symbol, existing);
 
+    // Only send subscribe request if this is the first handler for this symbol
     if (existing.length === 1) {
-      await this.send({ ticks: symbol, subscribe: 1 });
+      try {
+        const response = await this.send({ ticks: symbol, subscribe: 1 });
+        if (response.error) {
+          console.error(`[DerivAPI] Subscription error for ${symbol}:`, response.error.message);
+          this.subscriptionHandlers.delete(symbol);
+          return;
+        }
+        if (response.subscription) {
+          this.subscriptionIds.set(symbol, response.subscription.id);
+        }
+      } catch (err) {
+        console.error(`[DerivAPI] Failed to subscribe to ${symbol}:`, err);
+        this.subscriptionHandlers.delete(symbol);
+      }
     }
   }
 
-  async unsubscribeTicks(symbol: string) {
+  async unsubscribeTicks(symbol: string, handler?: MessageHandler) {
+    let handlers = this.subscriptionHandlers.get(symbol) || [];
+    if (handler) {
+      handlers = handlers.filter(h => h !== handler);
+      if (handlers.length > 0) {
+        this.subscriptionHandlers.set(symbol, handlers);
+        return; // Still other handlers active for this symbol
+      }
+    }
+    
+    // No more handlers or explicitly unsubscribing everything for this symbol
     this.subscriptionHandlers.delete(symbol);
-    try {
-      await this.send({ forget_all: 'ticks' });
-    } catch {}
+    const subId = this.subscriptionIds.get(symbol);
+    if (subId) {
+      this.subscriptionIds.delete(symbol);
+      try {
+        // Use forget with the specific subscription ID, NOT forget_all
+        await this.send({ forget: subId });
+      } catch (err) {
+        console.warn(`[DerivAPI] Failed to forget ${symbol} (${subId}):`, err);
+      }
+    }
   }
 
   async getTickHistory(symbol: string, count: number = 100): Promise<TickHistoryResponse> {
