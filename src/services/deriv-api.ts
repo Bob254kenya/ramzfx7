@@ -53,6 +53,22 @@ export interface ContractResult {
 
 export type MessageHandler = (data: any) => void;
 
+// Unified safe last digit extraction function
+export function safeLastDigit(price: number): number {
+  if (isNaN(price) || !isFinite(price)) return 0;
+  const absolutePrice = Math.abs(price);
+  const priceStr = absolutePrice.toString();
+  const decimalIndex = priceStr.indexOf('.');
+  
+  if (decimalIndex === -1) return 0;
+  
+  const decimalPart = priceStr.substring(decimalIndex + 1);
+  if (decimalPart.length < 1) return 0;
+  
+  const lastDigit = parseInt(decimalPart.charAt(decimalPart.length - 1), 10);
+  return isNaN(lastDigit) ? 0 : lastDigit;
+}
+
 class DerivAPI {
   private ws: WebSocket | null = null;
   private reqId = 0;
@@ -418,3 +434,332 @@ export const MARKET_GROUPS = [
   { value: 'bull', label: 'Bull' },
   { value: 'bear', label: 'Bear' },
 ] as const;
+
+// Scanner state and types
+export interface DigitDistribution {
+  digit: number;
+  count: number;
+  percentage: number;
+}
+
+export interface ScannerState {
+  symbol: MarketSymbol;
+  totalTicks: number;
+  distributions: DigitDistribution[];
+  lastDigits: number[];
+  lastPrice: number | null;
+  isActive: boolean;
+  lastUpdate: Date;
+}
+
+export type ScannerStatus = 'idle' | 'scanning' | 'paused' | 'error';
+
+// Scanner class for tracking digit distributions
+export class LastDigitScanner {
+  private symbol: MarketSymbol;
+  private maxTicks: number;
+  private distributions: Map<number, number>;
+  private lastDigits: number[];
+  private lastPrice: number | null;
+  private isActive: boolean;
+  private status: ScannerStatus;
+  private errorMessage: string | null;
+  private unsubscribeFn: (() => void) | null = null;
+  private tickHandler: MessageHandler | null = null;
+
+  constructor(symbol: MarketSymbol, maxTicks: number = 500) {
+    this.symbol = symbol;
+    this.maxTicks = maxTicks;
+    this.distributions = new Map();
+    this.lastDigits = [];
+    this.lastPrice = null;
+    this.isActive = false;
+    this.status = 'idle';
+    this.errorMessage = null;
+  }
+
+  getState(): ScannerState {
+    const distributions: DigitDistribution[] = [];
+    const totalTicks = this.lastDigits.length;
+    
+    for (let i = 0; i <= 9; i++) {
+      const count = this.distributions.get(i) || 0;
+      // Always calculate percentage using (count / totalTicks) * 100
+      const percentage = totalTicks > 0 ? (count / totalTicks) * 100 : 0;
+      distributions.push({
+        digit: i,
+        count,
+        percentage
+      });
+    }
+    
+    return {
+      symbol: this.symbol,
+      totalTicks,
+      distributions,
+      lastDigits: [...this.lastDigits],
+      lastPrice: this.lastPrice,
+      isActive: this.isActive,
+      lastUpdate: new Date()
+    };
+  }
+
+  async start(): Promise<void> {
+    if (this.isActive) return;
+    if (this.status === 'error') this.clearError();
+    
+    this.isActive = true;
+    this.status = 'scanning';
+    
+    // Clear existing data when starting new scan
+    this.distributions.clear();
+    this.lastDigits = [];
+    this.lastPrice = null;
+    
+    // First, load historical ticks
+    try {
+      const history = await derivApi.getTickHistory(this.symbol, this.maxTicks);
+      if (history.history && history.history.prices) {
+        for (const price of history.history.prices) {
+          this.processTick(price);
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to load tick history for ${this.symbol}:`, err);
+      this.errorMessage = `Failed to load history: ${err instanceof Error ? err.message : String(err)}`;
+      this.status = 'error';
+      this.isActive = false;
+      throw err;
+    }
+    
+    // Subscribe to live ticks
+    this.tickHandler = (data: any) => {
+      if (data.tick && data.tick.symbol === this.symbol) {
+        this.processTick(data.tick.quote);
+      }
+    };
+    
+    await derivApi.subscribeTicks(this.symbol, this.tickHandler);
+  }
+
+  pause(): void {
+    if (!this.isActive) return;
+    this.isActive = false;
+    this.status = 'paused';
+  }
+
+  resume(): void {
+    if (this.isActive) return;
+    if (this.status === 'error') this.clearError();
+    this.isActive = true;
+    this.status = 'scanning';
+  }
+
+  async stop(): Promise<void> {
+    this.isActive = false;
+    this.status = 'idle';
+    
+    if (this.tickHandler) {
+      await derivApi.unsubscribeTicks(this.symbol, this.tickHandler);
+      this.tickHandler = null;
+    }
+    
+    this.unsubscribeFn = null;
+  }
+
+  private processTick(price: number): void {
+    if (!this.isActive) return;
+    
+    this.lastPrice = price;
+    const lastDigit = safeLastDigit(price);
+    
+    // Add to last digits array
+    this.lastDigits.push(lastDigit);
+    if (this.lastDigits.length > this.maxTicks) {
+      const removed = this.lastDigits.shift();
+      if (removed !== undefined) {
+        const currentCount = this.distributions.get(removed) || 0;
+        if (currentCount <= 1) {
+          this.distributions.delete(removed);
+        } else {
+          this.distributions.set(removed, currentCount - 1);
+        }
+      }
+    }
+    
+    // Update distribution
+    const currentCount = this.distributions.get(lastDigit) || 0;
+    this.distributions.set(lastDigit, currentCount + 1);
+  }
+
+  getStatus(): ScannerStatus {
+    return this.status;
+  }
+
+  getErrorMessage(): string | null {
+    return this.errorMessage;
+  }
+
+  private clearError(): void {
+    this.errorMessage = null;
+    this.status = 'idle';
+  }
+}
+
+// Utility function to find best digit based on distribution
+export function findBestDigit(distributions: DigitDistribution[]): { digit: number; percentage: number } | null {
+  if (!distributions || distributions.length === 0) return null;
+  
+  let bestDigit = 0;
+  let bestPercentage = -1;
+  
+  for (const dist of distributions) {
+    if (dist.percentage > bestPercentage) {
+      bestPercentage = dist.percentage;
+      bestDigit = dist.digit;
+    }
+  }
+  
+  return bestPercentage >= 0 ? { digit: bestDigit, percentage: bestPercentage } : null;
+}
+
+// Utility function to find worst digit based on distribution
+export function findWorstDigit(distributions: DigitDistribution[]): { digit: number; percentage: number } | null {
+  if (!distributions || distributions.length === 0) return null;
+  
+  let worstDigit = 0;
+  let worstPercentage = Infinity;
+  
+  for (const dist of distributions) {
+    if (dist.percentage < worstPercentage) {
+      worstPercentage = dist.percentage;
+      worstDigit = dist.digit;
+    }
+  }
+  
+  return worstPercentage !== Infinity ? { digit: worstDigit, percentage: worstPercentage } : null;
+}
+
+// React hook for scanner management (compatible with React)
+export function createScannerManager() {
+  const scanners = new Map<MarketSymbol, LastDigitScanner>();
+  
+  function getScanner(symbol: MarketSymbol, maxTicks: number = 500): LastDigitScanner {
+    if (!scanners.has(symbol)) {
+      scanners.set(symbol, new LastDigitScanner(symbol, maxTicks));
+    }
+    return scanners.get(symbol)!;
+  }
+  
+  async function startScanner(symbol: MarketSymbol, maxTicks: number = 500): Promise<LastDigitScanner> {
+    const scanner = getScanner(symbol, maxTicks);
+    await scanner.start();
+    return scanner;
+  }
+  
+  async function stopScanner(symbol: MarketSymbol): Promise<void> {
+    const scanner = scanners.get(symbol);
+    if (scanner) {
+      await scanner.stop();
+    }
+  }
+  
+  function getScannerState(symbol: MarketSymbol): ScannerState | null {
+    const scanner = scanners.get(symbol);
+    return scanner ? scanner.getState() : null;
+  }
+  
+  async function stopAllScanners(): Promise<void> {
+    const promises = Array.from(scanners.values()).map(scanner => scanner.stop());
+    await Promise.all(promises);
+    scanners.clear();
+  }
+  
+  return {
+    getScanner,
+    startScanner,
+    stopScanner,
+    getScannerState,
+    stopAllScanners
+  };
+}
+
+// Example React component for displaying digit distribution
+export function DigitDistributionDisplay({ state }: { state: ScannerState }) {
+  const getBarColor = (percentage: number) => {
+    if (percentage > 15) return 'bg-red-500';
+    if (percentage > 12) return 'bg-orange-500';
+    if (percentage > 10) return 'bg-yellow-500';
+    if (percentage > 8) return 'bg-green-500';
+    return 'bg-blue-500';
+  };
+  
+  return (
+    <div className="p-4 border rounded-lg">
+      <div className="mb-4">
+        <h3 className="text-lg font-semibold">{state.symbol}</h3>
+        <p className="text-sm text-gray-600">
+          Total Ticks: {state.totalTicks} | Last Update: {state.lastUpdate.toLocaleTimeString()}
+        </p>
+        {state.lastPrice !== null && (
+          <p className="text-sm text-gray-600">Last Price: {state.lastPrice.toFixed(5)}</p>
+        )}
+        {state.isActive && (
+          <span className="inline-flex items-center px-2 py-1 text-xs font-medium text-green-700 bg-green-100 rounded">
+            Scanning Active
+          </span>
+        )}
+      </div>
+      
+      <div className="space-y-2">
+        {state.distributions.map(({ digit, count, percentage }) => (
+          <div key={digit} className="flex items-center gap-2">
+            <div className="w-12 text-right font-mono font-bold">
+              Digit {digit}:
+            </div>
+            <div className="flex-1">
+              <div className="relative h-6 bg-gray-200 rounded overflow-hidden">
+                <div
+                  className={`absolute left-0 top-0 h-full ${getBarColor(percentage)} transition-all duration-300`}
+                  style={{ width: `${percentage}%` }}
+                />
+                <div className="absolute inset-0 flex items-center justify-end pr-2 text-xs font-medium text-gray-700">
+                  {count} ({percentage.toFixed(2)}%)
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      
+      <div className="mt-4 pt-4 border-t">
+        <div className="grid grid-cols-2 gap-4">
+          {(() => {
+            const best = findBestDigit(state.distributions);
+            const worst = findWorstDigit(state.distributions);
+            return (
+              <>
+                {best && (
+                  <div className="p-2 bg-green-50 rounded">
+                    <p className="text-sm font-medium text-green-900">Most Frequent</p>
+                    <p className="text-lg font-bold text-green-700">
+                      Digit {best.digit} ({best.percentage.toFixed(2)}%)
+                    </p>
+                  </div>
+                )}
+                {worst && (
+                  <div className="p-2 bg-red-50 rounded">
+                    <p className="text-sm font-medium text-red-900">Least Frequent</p>
+                    <p className="text-lg font-bold text-red-700">
+                      Digit {worst.digit} ({worst.percentage.toFixed(2)}%)
+                    </p>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      </div>
+    </div>
+  );
+}
